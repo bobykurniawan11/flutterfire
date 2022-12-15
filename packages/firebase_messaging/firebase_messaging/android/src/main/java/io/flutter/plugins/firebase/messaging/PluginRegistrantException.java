@@ -10,4 +10,5 @@ class PluginRegistrantException extends RuntimeException {
     super(
         "PluginRegistrantCallback is not set. Did you forget to call "
             + "FlutterFirebaseMessagingBackgroundService.setPluginRegistrant? See the documentation for instructions.");
+    }
   }
