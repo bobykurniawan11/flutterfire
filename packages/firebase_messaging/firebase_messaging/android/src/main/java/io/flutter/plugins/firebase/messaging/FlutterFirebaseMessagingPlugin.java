@@ -13,12 +13,11 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.Tasks;
 import com.google.firebase.FirebaseApp;
-import com.google.firebase.iid.FirebaseInstanceId;
-import com.google.firebase.iid.Metadata;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.RemoteMessage;
 import io.flutter.embedding.engine.FlutterShellArgs;
@@ -31,7 +30,6 @@ import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
 import io.flutter.plugin.common.PluginRegistry.NewIntentListener;
-import io.flutter.plugin.common.PluginRegistry.Registrar;
 import io.flutter.plugins.firebase.core.FlutterFirebasePlugin;
 import java.util.HashMap;
 import java.util.Map;
@@ -50,14 +48,6 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
   private Activity mainActivity;
   private RemoteMessage initialMessage;
 
-  @SuppressWarnings("unused")
-  public static void registerWith(Registrar registrar) {
-    FlutterFirebaseMessagingPlugin instance = new FlutterFirebaseMessagingPlugin();
-    instance.setActivity(registrar.activity());
-    registrar.addNewIntentListener(instance);
-    instance.initInstance(registrar.messenger());
-  }
-
   private void initInstance(BinaryMessenger messenger) {
     String channelName = "plugins.flutter.io/firebase_messaging";
     channel = new MethodChannel(messenger, channelName);
@@ -74,23 +64,16 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
     registerPlugin(channelName, this);
   }
 
-  private void onAttachedToEngine(Context context, BinaryMessenger binaryMessenger) {
-    initInstance(binaryMessenger);
-  }
-
-  private void setActivity(Activity flutterActivity) {
-    this.mainActivity = flutterActivity;
-  }
-
   @Override
   public void onAttachedToEngine(FlutterPluginBinding binding) {
-    onAttachedToEngine(binding.getApplicationContext(), binding.getBinaryMessenger());
+    initInstance(binding.getBinaryMessenger());
   }
 
   @Override
   public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
-    LocalBroadcastManager.getInstance(ContextHolder.getApplicationContext())
-        .unregisterReceiver(this);
+    if (binding.getApplicationContext() != null) {
+      LocalBroadcastManager.getInstance(binding.getApplicationContext()).unregisterReceiver(this);
+    }
   }
 
   @Override
@@ -142,28 +125,20 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
     }
   }
 
-  private Task<Void> deleteToken(Map<String, Object> arguments) {
+  private Task<Void> deleteToken() {
     return Tasks.call(
         cachedThreadPool,
         () -> {
-          String senderId =
-              arguments.get("senderId") != null
-                  ? (String) arguments.get("senderId")
-                  : Metadata.getDefaultSenderId(FirebaseApp.getInstance());
-          FirebaseInstanceId.getInstance().deleteToken(senderId, "*");
+          Tasks.await(FirebaseMessaging.getInstance().deleteToken());
           return null;
         });
   }
 
-  private Task<Map<String, Object>> getToken(Map<String, Object> arguments) {
+  private Task<Map<String, Object>> getToken() {
     return Tasks.call(
         cachedThreadPool,
         () -> {
-          String senderId =
-              arguments.get("senderId") != null
-                  ? (String) arguments.get("senderId")
-                  : Metadata.getDefaultSenderId(FirebaseApp.getInstance());
-          String token = FirebaseInstanceId.getInstance().getToken(senderId, "*");
+          String token = Tasks.await(FirebaseMessaging.getInstance().getToken());
           return new HashMap<String, Object>() {
             {
               put("token", token);
@@ -276,6 +251,18 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
         });
   }
 
+  private Task<Map<String, Integer>> getPermissions() {
+    return Tasks.call(
+        cachedThreadPool,
+        () -> {
+          final Map<String, Integer> permissions = new HashMap<>();
+          final boolean areNotificationsEnabled =
+              NotificationManagerCompat.from(mainActivity).areNotificationsEnabled();
+          permissions.put("authorizationStatus", areNotificationsEnabled ? 1 : 0);
+          return permissions;
+        });
+  }
+
   @Override
   public void onMethodCall(final MethodCall call, @NonNull final Result result) {
     Task<?> methodCallTask;
@@ -328,10 +315,10 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
         methodCallTask = getInitialMessage(call.arguments());
         break;
       case "Messaging#deleteToken":
-        methodCallTask = deleteToken(call.arguments());
+        methodCallTask = deleteToken();
         break;
       case "Messaging#getToken":
-        methodCallTask = getToken(call.arguments());
+        methodCallTask = getToken();
         break;
       case "Messaging#subscribeToTopic":
         methodCallTask = subscribeToTopic(call.arguments());
@@ -344,6 +331,10 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
         break;
       case "Messaging#setAutoInitEnabled":
         methodCallTask = setAutoInitEnabled(call.arguments());
+        break;
+      case "Messaging#requestPermission":
+      case "Messaging#getNotificationSettings":
+        methodCallTask = getPermissions();
         break;
       default:
         result.notImplemented();
@@ -372,7 +363,7 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
     } else {
       details.put("message", "An unknown error has occurred.");
     }
-    details.put("additionalData", new HashMap<>());
+
     return details;
   }
 
@@ -418,8 +409,10 @@ public class FlutterFirebaseMessagingPlugin extends BroadcastReceiver
         cachedThreadPool,
         () -> {
           Map<String, Object> constants = new HashMap<>();
-          FirebaseMessaging firebaseMessaging = FirebaseMessaging.getInstance();
-          constants.put("AUTO_INIT_ENABLED", firebaseMessaging.isAutoInitEnabled());
+          if (firebaseApp.getName().equals("[DEFAULT]")) {
+            FirebaseMessaging firebaseMessaging = FirebaseMessaging.getInstance();
+            constants.put("AUTO_INIT_ENABLED", firebaseMessaging.isAutoInitEnabled());
+          }
           return constants;
         });
   }
